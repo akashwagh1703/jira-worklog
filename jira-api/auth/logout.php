@@ -5,6 +5,9 @@ authCorsHeaders();
 
 startSession();
 
+// Capture identity BEFORE we destroy the session so the audit entry has it.
+auditLog('logout', []);
+
 $_SESSION = [];
 if (ini_get('session.use_cookies')) {
     $params = session_get_cookie_params();

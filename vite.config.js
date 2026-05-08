@@ -6,7 +6,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
-    base: env.VITE_APP_BASE_PATH || '/famrut-team-logs/logs/',
+    base: env.VITE_APP_BASE_PATH || '/esds-worklogs/',
     server: {
       port: 5173,
       strictPort: true,

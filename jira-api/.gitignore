@@ -4,3 +4,21 @@ cache/
 # Phase 3: user store with role/scope assignments. Never committed.
 users.json
 users.json.tmp
+
+# Phase 4: append-only audit log. Never committed.
+audit.log
+audit.log.*
+
+# Phase 5: SQLite DB file + rate-limit JSON file. Never committed.
+*.db
+*.sqlite
+*.sqlite3
+data.db*
+rate_limits.json
+
+# Backend env file with real credentials (DB password etc). Never committed.
+.env
+.env.local
+
+# Throwaway diagnostic scripts (anything starting with underscore).
+_*.php

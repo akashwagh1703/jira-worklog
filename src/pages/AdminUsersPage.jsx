@@ -142,6 +142,21 @@ const AdminUsersPage = () => {
         </p>
       </div>
 
+      <div className="bg-blue-50 border border-blue-200 text-blue-900 rounded-xl p-4 text-sm space-y-2">
+        <div className="font-medium">How scope works (Phase 4)</div>
+        <ul className="list-disc list-inside space-y-1 text-blue-800">
+          <li><span className="font-mono">*</span> = all projects (full access — admins typically use this).</li>
+          <li>
+            Otherwise, comma-separate Jira project KEYS or NAMES (e.g.{' '}
+            <span className="font-mono">FAMRUT, FMRT, OCAC-FUP</span>). Managers will only see issues, employees, and worklogs in those projects.
+          </li>
+          <li>
+            Scope is enforced server-side: any JQL the user sends is intersected with their scope before it reaches Jira.
+            Out-of-scope issue keys are silently filtered (and logged to the audit trail).
+          </li>
+        </ul>
+      </div>
+
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-800 rounded-xl p-3 text-sm">{error}</div>
       )}

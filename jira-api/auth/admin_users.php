@@ -19,8 +19,8 @@ $method = $_SERVER['REQUEST_METHOD'];
 
 try {
     if ($method === 'GET') {
-        $store = loadUsers();
-        $users = array_values($store['users']);
+        // Phase 5: user_store now returns a flat [email => user] map.
+        $users = array_values(loadUsers());
         usort($users, fn($a, $b) => strcasecmp($a['email'], $b['email']));
         echo json_encode(['success' => true, 'users' => $users]);
         exit;
@@ -50,6 +50,11 @@ try {
             $user = $resp['user'];
         }
 
+        auditLog('admin.user_upsert', [
+            'targetEmail' => $email,
+            'role'        => $user['role'],
+            'scope'       => $user['scope'] ?? null,
+        ]);
         echo json_encode(['success' => true, 'user' => $user]);
         exit;
     }
@@ -79,6 +84,12 @@ try {
             if (!$resp['ok']) jsonError($resp['error'], 400);
             $user = $resp['user'];
         }
+        auditLog('admin.user_update', [
+            'targetEmail' => $email,
+            'patch'       => $input,
+            'newRole'     => $user['role'],
+            'newScope'    => $user['scope'] ?? null,
+        ]);
         echo json_encode(['success' => true, 'user' => $user]);
         exit;
     }
@@ -89,6 +100,7 @@ try {
         if ($email === $me['email']) jsonError("You can't delete your own account", 400);
         $resp = deleteUser($email);
         if (!$resp['ok']) jsonError($resp['error'], 404);
+        auditLog('admin.user_delete', ['targetEmail' => $email]);
         echo json_encode(['success' => true]);
         exit;
     }
@@ -96,5 +108,6 @@ try {
     jsonError('Method not allowed', 405);
 } catch (Throwable $e) {
     error_log('[admin_users] ' . $e->getMessage());
+    auditLog('admin.error', ['error' => $e->getMessage()]);
     jsonError('Internal server error', 500);
 }

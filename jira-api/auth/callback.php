@@ -59,13 +59,15 @@ $displayName = $userinfo['info']['name']
             ?? trim(($userinfo['info']['given_name'] ?? '') . ' ' . ($userinfo['info']['family_name'] ?? ''))
             ?: $email;
 
-$user = upsertUser($email, $displayName);
+$user = bootstrapOidcUser($email, $displayName);
 
 // Promote the freshly-installed login into a real session.
 session_regenerate_id(true);
 $_SESSION['user_email']  = $user['email'];
 $_SESSION['login_at']    = time();
 $_SESSION['login_via']   = 'oidc';
+
+auditLog('login_sso', ['email' => $user['email'], 'role' => $user['role']]);
 
 // Clean redirect into the SPA. `next` was validated when stored in login.php.
 $dest = APP_URL . ltrim($next, '/');

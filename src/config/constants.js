@@ -1,20 +1,23 @@
 // Branding & deployment configuration. All values can be overridden via Vite env vars
-// (VITE_*) at build time. Defaults preserve the existing Famrut-team production setup
-// so nothing breaks when env vars are absent.
+// (VITE_*) at build time. Defaults match the ESDS-wide deployment layout:
+//   SPA  →  /esds-worklogs/
+//   API  →  /esds-worklogs/jira-api/
+// Override via VITE_APP_BASE_PATH / VITE_API_BASE_URL when self-hosting.
 
 export const APP_NAME = import.meta.env.VITE_APP_NAME || 'ESDS Worklog Dashboard';
 export const APP_TAGLINE = import.meta.env.VITE_APP_TAGLINE || 'Employee Analytics Dashboard';
 
 // Public base path the SPA is served from (must match vite.config.js `base` and .htaccess RewriteBase).
 // Trailing slash is required.
-export const APP_BASE_PATH = import.meta.env.VITE_APP_BASE_PATH || '/famrut-team-logs/logs/';
+export const APP_BASE_PATH = import.meta.env.VITE_APP_BASE_PATH || '/esds-worklogs/';
 
 // React Router basename never ends with a slash.
 export const APP_ROUTER_BASENAME = APP_BASE_PATH.replace(/\/$/, '');
 
-// PHP backend (proxy + projects API).
+// PHP backend (proxy + projects API + Phase 2-5 endpoints).
+// Convention: SPA at <host>/esds-worklogs/ → API at <host>/esds-worklogs/jira-api
 export const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || 'https://dev.famrut.com/famrut-team-logs/api';
+  import.meta.env.VITE_API_BASE_URL || 'https://dev.famrut.com/esds-worklogs/jira-api';
 
 export const PROXY_URL = `${API_BASE_URL}/proxy.php`;
 

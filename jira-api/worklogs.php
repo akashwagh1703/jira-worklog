@@ -2,10 +2,12 @@
 require_once __DIR__ . '/jira_service.php';
 require_once __DIR__ . '/cache_helper.php';
 require_once __DIR__ . '/auth_helper.php';
+require_once __DIR__ . '/rate_limit_helper.php';
 
 authCorsHeaders();
 
-requireAuth();
+$me = requireAuth();
+requireRateLimit('worklogs', $me);
 
 $method = $_SERVER['REQUEST_METHOD'];
 
@@ -16,6 +18,15 @@ try {
         if ($issueKey === '' || !preg_match('/^[A-Za-z][A-Za-z0-9_]*-\d+$/', $issueKey)) {
             http_response_code(400);
             echo json_encode(['success' => false, 'message' => "Valid 'issueKey' query parameter is required"]);
+            exit;
+        }
+
+        // Phase 4: deny issues outside the user's scope (best-effort — Jira's
+        // permission model is the second line of defense).
+        if (!isIssueKeyInScope($issueKey, $me)) {
+            auditLog('worklogs.scope_denied', ['issueKey' => $issueKey]);
+            http_response_code(403);
+            echo json_encode(['success' => false, 'message' => 'Issue is outside your project scope']);
             exit;
         }
 
@@ -37,6 +48,7 @@ try {
 
         $worklogs = $resp['data']['worklogs'] ?? [];
         cacheSet($key, $worklogs);
+        auditLog('worklogs.fetch_single', ['issueKey' => $issueKey, 'rows' => count($worklogs)]);
         echo json_encode(['success' => true, 'cached' => false, 'data' => $worklogs]);
         exit;
     }
@@ -59,6 +71,16 @@ try {
 
         // Cap to protect Jira API rate limits
         $issueKeys = array_slice(array_unique($issueKeys), 0, 500);
+
+        // Phase 4: drop issue keys outside the user's scope. We don't 403 here
+        // because callers commonly pass a mixed-project list; we just return
+        // worklogs only for the keys they're allowed to see.
+        $beforeCount = count($issueKeys);
+        $issueKeys   = array_values(array_filter($issueKeys, fn($k) => isIssueKeyInScope($k, $me)));
+        $droppedKeys = $beforeCount - count($issueKeys);
+        if ($droppedKeys > 0) {
+            auditLog('worklogs.scope_filtered', ['dropped' => $droppedKeys, 'kept' => count($issueKeys)]);
+        }
 
         $cacheTtl = 300;
         $key      = cacheKey(['worklog-bulk', $issueKeys, $startDate, $endDate, $author]);
@@ -98,6 +120,13 @@ try {
             'count' => count($allWorklogs),
         ];
         cacheSet($key, $payload);
+        auditLog('worklogs.fetch_bulk', [
+            'issueCount' => count($issueKeys),
+            'rows'       => count($allWorklogs),
+            'startDate'  => $startDate,
+            'endDate'    => $endDate,
+            'author'     => $author,
+        ]);
         echo json_encode(['success' => true, 'cached' => false] + $payload);
         exit;
     }
@@ -105,6 +134,7 @@ try {
     http_response_code(405);
     echo json_encode(['success' => false, 'message' => 'Method not allowed']);
 } catch (Throwable $e) {
+    auditLog('worklogs.error', ['error' => $e->getMessage()]);
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => 'Internal server error']);
 }

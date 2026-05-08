@@ -9,6 +9,28 @@ import { API_BASE_URL, APP_BASE_PATH } from '../config/constants';
 // users.php) also gets the session cookie when the gate is enabled later.
 axios.defaults.withCredentials = true;
 
+// Phase 5: surface 429 (rate-limit) responses through a global window event so
+// the UI can display a non-blocking toast. Component-level catches still see
+// the error normally; this is just an additional notification channel.
+let _lastRateLimitNotice = 0;
+axios.interceptors.response.use(
+  (resp) => resp,
+  (err) => {
+    if (err?.response?.status === 429) {
+      const now = Date.now();
+      // Throttle so we don't spam the toast layer if many requests fail at once.
+      if (now - _lastRateLimitNotice > 3000) {
+        _lastRateLimitNotice = now;
+        const retryAfter = err.response.data?.retryAfter ?? 5;
+        window.dispatchEvent(new CustomEvent('app:ratelimit', {
+          detail: { retryAfter, message: err.response.data?.message },
+        }));
+      }
+    }
+    return Promise.reject(err);
+  }
+);
+
 // Top-level GET to /auth/login.php triggers the OIDC redirect; we replace
 // window.location so the browser follows the chain (this app -> IdP -> back).
 export const ssoLoginRedirect = (next = '/') => {
@@ -67,4 +89,13 @@ export const deleteUser = async (email) => {
 // SPA login screen on the right base path.
 export const goToLogin = () => {
   window.location.href = APP_BASE_PATH + 'login';
+};
+
+// Phase 4 audit log viewer.
+export const fetchAudit = async ({ limit = 200, action = null, user = null } = {}) => {
+  const params = { limit };
+  if (action) params.action = action;
+  if (user)   params.user   = user;
+  const res = await axios.get(`${API_BASE_URL}/auth/audit.php`, { params });
+  return res.data;
 };

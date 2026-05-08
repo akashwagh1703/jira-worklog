@@ -2,6 +2,7 @@
 require_once __DIR__ . '/jira_service.php';
 require_once __DIR__ . '/cache_helper.php';
 require_once __DIR__ . '/auth_helper.php';
+require_once __DIR__ . '/rate_limit_helper.php';
 
 authCorsHeaders();
 
@@ -11,23 +12,29 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
     exit;
 }
 
-requireAuth();
+$me = requireAuth();
+requireRateLimit('users', $me);
 
 $days          = isset($_GET['days']) ? max(1, min(365, intval($_GET['days']))) : 90;
 $projectsParam = isset($_GET['projects']) ? trim($_GET['projects']) : '';
 
 // Parse comma-separated project list. Allow letters, digits, dash, underscore,
 // space, dot and unicode letters (Jira project names support i18n).
-$projects = [];
+$rawProjects = [];
 if ($projectsParam !== '') {
     foreach (explode(',', $projectsParam) as $p) {
         $p = trim($p);
         if ($p === '') continue;
         if (mb_strlen($p) > 200) continue;
         if (preg_match('/[\\\\"]/', $p)) continue; // disallow chars that would break our JQL escaping
-        $projects[] = $p;
+        $rawProjects[] = $p;
     }
 }
+
+// Phase 4: clamp the requested project list to the user's scope.
+$scoped = applyScopeToProjectList(empty($rawProjects) ? '*' : $rawProjects, $me);
+$projects = $scoped === '*' ? [] : $scoped;
+$scopeApplied = ($scoped !== '*' && (empty($rawProjects) || count($scoped) !== count($rawProjects)));
 
 try {
     $cacheTtl = 600; // 10 min
@@ -87,8 +94,15 @@ try {
     });
 
     cacheSet($key, $users);
+    auditLog('users.fetch', [
+        'days'         => $days,
+        'projects'     => $projects,
+        'scopeApplied' => $scopeApplied,
+        'count'        => count($users),
+    ]);
     echo json_encode(['success' => true, 'cached' => false, 'users' => $users]);
 } catch (Throwable $e) {
+    auditLog('users.error', ['error' => $e->getMessage()]);
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => 'Internal server error']);
 }

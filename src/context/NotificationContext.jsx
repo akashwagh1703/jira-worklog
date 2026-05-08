@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 
 const NotificationContext = createContext();
 
@@ -24,6 +24,19 @@ export const NotificationProvider = ({ children }) => {
   const showError = (message) => addNotification(message, 'error');
   const showInfo = (message) => addNotification(message, 'info');
   const showWarning = (message) => addNotification(message, 'warning');
+
+  // Phase 5: subscribe to global rate-limit events emitted from authService.js
+  // by the axios interceptor. Surfaces a single warning toast even if multiple
+  // requests fail in quick succession (interceptor throttles internally).
+  useEffect(() => {
+    const handler = (e) => {
+      const retry = e.detail?.retryAfter ?? 5;
+      const msg   = e.detail?.message || `Too many requests — try again in ${retry}s.`;
+      addNotification(msg, 'warning');
+    };
+    window.addEventListener('app:ratelimit', handler);
+    return () => window.removeEventListener('app:ratelimit', handler);
+  }, []);
 
   return (
     <NotificationContext.Provider value={{ showSuccess, showError, showInfo, showWarning }}>

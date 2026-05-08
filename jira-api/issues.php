@@ -2,6 +2,7 @@
 require_once __DIR__ . '/jira_service.php';
 require_once __DIR__ . '/cache_helper.php';
 require_once __DIR__ . '/auth_helper.php';
+require_once __DIR__ . '/rate_limit_helper.php';
 
 authCorsHeaders();
 
@@ -12,7 +13,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 }
 
 // Becomes a 401 only when AUTH_REQUIRED=true. Until then this is a no-op.
-requireAuth();
+$me = requireAuth();
+requireRateLimit('issues', $me);
 
 $jql        = isset($_GET['jql'])        ? trim($_GET['jql'])              : '';
 $fields     = isset($_GET['fields'])     ? trim($_GET['fields'])           : 'summary,status,assignee,project,issuetype,created,updated,duedate,priority';
@@ -33,8 +35,15 @@ if (strlen($jql) > 4000) {
     exit;
 }
 
+// Phase 4: clamp the JQL to the user's allowed projects. No-op when scope is '*'.
+$rawJql       = $jql;
+$jql          = applyScopeToJql($jql, $me);
+$scopeApplied = $jql !== $rawJql;
+
 try {
     $cacheTtl = 300; // 5 minutes
+    // Cache key includes the scoped JQL so users with different scopes get
+    // different cache entries even if they pass the same query string.
     $key      = cacheKey(['issues', $jql, $fields, $maxResults, $startAt, $paginate]);
     $cached   = cacheGet($key, $cacheTtl);
 
@@ -88,8 +97,17 @@ try {
     }
 
     cacheSet($key, $payload);
+    auditLog('issues.fetch', [
+        'jql'         => $rawJql,
+        'scopedJql'   => $scopeApplied ? $jql : null,
+        'rows'        => count($payload['issues']),
+        'total'       => $payload['total'] ?? null,
+        'paginate'    => $paginate,
+        'cached'      => false,
+    ]);
     echo json_encode(['success' => true, 'cached' => false] + $payload);
 } catch (Throwable $e) {
+    auditLog('issues.error', ['jql' => $rawJql, 'error' => $e->getMessage()]);
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => 'Internal server error']);
 }

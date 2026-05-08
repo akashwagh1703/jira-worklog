@@ -1,14 +1,24 @@
 <?php
-// Phase 3 auth framework.
+// Phase 3-5 auth framework.
 //
 // Responsibilities:
 //   1. Session management (PHP native sessions, HttpOnly + Secure cookies).
-//   2. User store (JSON file at jira-api/users.json — gitignored).
-//   3. OIDC client primitives shared by login.php / callback.php.
-//   4. requireAuth() / requireRole() middleware for protected endpoints.
+//   2. OIDC client primitives shared by login.php / callback.php.
+//   3. requireAuth() / requireRole() middleware for protected endpoints.
+//   4. Phase 4 scope enforcement helpers (applyScopeToJql, etc).
+//   5. Phase 4/5 audit logging — delegated to audit_store (file or DB).
 //
-// Phase 4 will move the user store to a real DB and add audit logs; the API
-// surface in this file will not change so callers won't need to rewrite.
+// Phase 5 split out:
+//   - user_store.php  — user CRUD with file-or-DB driver.
+//   - audit_store.php — audit log read/write with file-or-DB driver.
+//   - db.php          — PDO singleton.
+//
+// Public API used by other endpoints stays the same; this file is now mostly
+// a thin policy layer over those stores.
+
+require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/user_store.php';
+require_once __DIR__ . '/audit_store.php';
 
 // ---------------------------------------------------------------------------
 // Configuration (all values read from env; sensible local defaults below).
@@ -27,12 +37,7 @@ define('OIDC_ALLOWED_DOMAINS', getenv('OIDC_ALLOWED_DOMAINS') ?: '');
 define('OIDC_INITIAL_ADMIN',   getenv('OIDC_INITIAL_ADMIN') ?: '');
 
 // Where the SPA lives so callback can redirect back into it after login.
-define('APP_URL', getenv('APP_URL') ?: '/famrut-team-logs/logs/');
-
-// User store location.
-if (!defined('USERS_FILE')) {
-    define('USERS_FILE', __DIR__ . '/users.json');
-}
+define('APP_URL', getenv('APP_URL') ?: '/esds-worklogs/');
 
 // When AUTH_REQUIRED=true every Phase 2 endpoint will reject anonymous traffic.
 // Default is false so we don't break existing deployments before SSO is wired up.
@@ -63,126 +68,24 @@ function startSession() {
 }
 
 // ---------------------------------------------------------------------------
-// User store: simple JSON file.
+// OIDC bootstrap helper used by callback.php.
 //
-// File shape:
-//   {
-//     "users": {
-//       "user@esds.co.in": {
-//         "email": "user@esds.co.in",
-//         "displayName": "User Name",
-//         "role": "admin" | "manager" | "employee",
-//         "scope": { "projects": ["FAMRUT", ...] | "*" },
-//         "createdAt": 1715000000,
-//         "lastLogin": 1715000000
-//       }
-//     }
-//   }
+// Creates the user if missing, applies the initial-admin policy on first
+// login, and touches last_login (for the DB driver).
 // ---------------------------------------------------------------------------
 
-function loadUsers() {
-    if (!file_exists(USERS_FILE)) {
-        return ['users' => []];
-    }
-    $raw = @file_get_contents(USERS_FILE);
-    if ($raw === false) return ['users' => []];
-    $decoded = json_decode($raw, true);
-    if (!is_array($decoded) || !isset($decoded['users']) || !is_array($decoded['users'])) {
-        return ['users' => []];
-    }
-    return $decoded;
-}
+function bootstrapOidcUser($email, $displayName) {
+    $email     = strtolower(trim((string)$email));
+    $existed   = (bool) findUser($email);
+    $user      = upsertUser($email, $displayName);
 
-function saveUsers($store) {
-    $tmp = USERS_FILE . '.tmp';
-    @file_put_contents($tmp, json_encode($store, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES), LOCK_EX);
-    @rename($tmp, USERS_FILE);
-}
-
-function findUser($email) {
-    $email = strtolower(trim($email));
-    if ($email === '') return null;
-    $store = loadUsers();
-    return $store['users'][$email] ?? null;
-}
-
-function upsertUser($email, $displayName) {
-    $email = strtolower(trim($email));
-    if ($email === '') return null;
-
-    $store = loadUsers();
-    $now   = time();
-
-    if (isset($store['users'][$email])) {
-        $store['users'][$email]['lastLogin'] = $now;
-        if ($displayName) {
-            $store['users'][$email]['displayName'] = $displayName;
-        }
-    } else {
-        // Bootstrap admin: the first email matching OIDC_INITIAL_ADMIN gets admin role.
-        $isInitialAdmin = OIDC_INITIAL_ADMIN !== ''
-            && strtolower(OIDC_INITIAL_ADMIN) === $email;
-
-        $store['users'][$email] = [
-            'email'       => $email,
-            'displayName' => $displayName ?: $email,
-            'role'        => $isInitialAdmin ? 'admin' : 'employee',
-            'scope'       => ['projects' => '*'], // empty scope = "all visible projects"
-            'createdAt'   => $now,
-            'lastLogin'   => $now,
-        ];
+    if (!$existed && OIDC_INITIAL_ADMIN !== '' && strtolower(OIDC_INITIAL_ADMIN) === $email) {
+        $resp = setUserRole($email, 'admin');
+        if ($resp['ok']) $user = $resp['user'];
     }
 
-    saveUsers($store);
-    return $store['users'][$email];
-}
-
-function setUserRole($email, $role) {
-    $email = strtolower(trim($email));
-    if (!in_array($role, ['admin', 'manager', 'employee'], true)) {
-        return ['ok' => false, 'error' => 'Invalid role'];
-    }
-    $store = loadUsers();
-    if (!isset($store['users'][$email])) {
-        return ['ok' => false, 'error' => 'User not found'];
-    }
-    $store['users'][$email]['role'] = $role;
-    saveUsers($store);
-    return ['ok' => true, 'user' => $store['users'][$email]];
-}
-
-function setUserScope($email, $projects) {
-    $email = strtolower(trim($email));
-    $store = loadUsers();
-    if (!isset($store['users'][$email])) {
-        return ['ok' => false, 'error' => 'User not found'];
-    }
-    if ($projects === '*' || $projects === ['*']) {
-        $store['users'][$email]['scope'] = ['projects' => '*'];
-    } elseif (is_array($projects)) {
-        // Sanitize: trim, drop empties, dedupe, cap.
-        $clean = [];
-        foreach ($projects as $p) {
-            $p = is_string($p) ? trim($p) : '';
-            if ($p !== '' && !in_array($p, $clean, true)) $clean[] = $p;
-        }
-        $store['users'][$email]['scope'] = ['projects' => array_slice($clean, 0, 200)];
-    } else {
-        return ['ok' => false, 'error' => 'projects must be array or "*"'];
-    }
-    saveUsers($store);
-    return ['ok' => true, 'user' => $store['users'][$email]];
-}
-
-function deleteUser($email) {
-    $email = strtolower(trim($email));
-    $store = loadUsers();
-    if (!isset($store['users'][$email])) {
-        return ['ok' => false, 'error' => 'User not found'];
-    }
-    unset($store['users'][$email]);
-    saveUsers($store);
-    return ['ok' => true];
+    touchUserLogin($email);
+    return $user;
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +229,122 @@ function requireRole($roles) {
         jsonError('Forbidden — required role: ' . implode('|', $roles), 403);
     }
     return $user;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: scope enforcement.
+//
+// The user store records per-user "scope" — either '*' (all projects) or an
+// allow-list of project names. Endpoints call these helpers BEFORE talking to
+// Jira so a determined manager can't craft a JQL that escapes their assigned
+// projects.
+//
+// Strategy: never trust client input. We always wrap caller-supplied JQL with
+// our own `project IN (...)` clause and intersect any caller-supplied project
+// list with the user's scope.
+// ---------------------------------------------------------------------------
+
+// Returns the user's effective project list ('*' OR string[]).
+function effectiveScopeProjects($user) {
+    if (!$user || !is_array($user) || !isset($user['scope'])) return '*';
+    $projects = $user['scope']['projects'] ?? '*';
+    if ($projects === '*' || $projects === ['*']) return '*';
+    if (!is_array($projects)) return '*';
+    $clean = [];
+    foreach ($projects as $p) {
+        if (is_string($p)) {
+            $p = trim($p);
+            if ($p !== '' && $p !== '*' && !in_array($p, $clean, true)) $clean[] = $p;
+        }
+    }
+    return empty($clean) ? '*' : $clean;
+}
+
+// Wrap caller-supplied JQL with the user's scope. Return value is always a
+// string usable as JQL. When scope is '*' (or no auth gate / no user) we
+// return the original JQL unchanged.
+function applyScopeToJql($jql, $user) {
+    $jql = is_string($jql) ? trim($jql) : '';
+    if (!AUTH_REQUIRED) return $jql; // scope only enforced when auth is on
+    $projects = effectiveScopeProjects($user);
+    if ($projects === '*') return $jql;
+
+    $escaped = array_map(function ($p) {
+        return '"' . str_replace('"', '\\"', $p) . '"';
+    }, $projects);
+    $clause = 'project IN (' . implode(', ', $escaped) . ')';
+
+    if ($jql === '') return $clause;
+    return $clause . ' AND (' . $jql . ')';
+}
+
+// Intersect a caller-supplied project list with the user's scope.
+// `$projects` may be '*' or a string[]. Returns a string[] (possibly empty)
+// OR '*' when scope is unrestricted.
+function applyScopeToProjectList($projects, $user) {
+    if (!AUTH_REQUIRED) {
+        // No auth gate => caller wins
+        if ($projects === '*' || $projects === ['*']) return '*';
+        if (!is_array($projects)) return '*';
+        return $projects;
+    }
+    $userScope = effectiveScopeProjects($user);
+    if ($userScope === '*') {
+        if ($projects === '*' || $projects === ['*']) return '*';
+        return is_array($projects) ? $projects : '*';
+    }
+    // Scoped user: clamp to intersection.
+    if ($projects === '*' || $projects === ['*'] || $projects === null || $projects === []) {
+        return $userScope;
+    }
+    if (!is_array($projects)) return $userScope;
+    $intersect = array_values(array_intersect($projects, $userScope));
+    return $intersect; // may be empty -> caller should treat as "no access"
+}
+
+// True if the user is authorized for this Jira issue key (e.g. "FAMRUT-123").
+// Returns true when scope is '*' OR when the issue's project prefix is in scope.
+function isIssueKeyInScope($issueKey, $user) {
+    if (!AUTH_REQUIRED) return true;
+    if (!preg_match('/^([A-Za-z][A-Za-z0-9_]*)-\d+$/', $issueKey, $m)) return false;
+    $projects = effectiveScopeProjects($user);
+    if ($projects === '*') return true;
+    foreach ($projects as $p) {
+        if ($p === $m[1]) return true; // exact key match
+        // Accept name-style scope entries; Jira's permission system is the second line of defense.
+        if (preg_match('/[\s\-_.]/', $p)) return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Audit logging — Phase 4 writer + Phase 5 store.
+//
+// Writer signature unchanged so callers don't need to be touched. Storage
+// (file vs DB) is decided by audit_store.php based on db() availability.
+// ---------------------------------------------------------------------------
+
+function auditLog($action, $details = []) {
+    $user = currentSessionUser();
+    $entry = [
+        'ts'      => gmdate('Y-m-d\\TH:i:s\\Z'),
+        'user'    => $user['email'] ?? null,
+        'role'    => $user['role']  ?? null,
+        'action'  => $action,
+        'ip'      => $_SERVER['REMOTE_ADDR']     ?? null,
+        'ua'      => substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 200),
+        'details' => $details,
+    ];
+    auditWrite($entry);
+}
+
+function auditTail($limit = 200, $filterAction = null, $filterUser = null) {
+    $limit = max(1, min(2000, intval($limit)));
+    return auditTailDriver(
+        $limit,
+        ($filterAction !== null && $filterAction !== '') ? $filterAction : null,
+        ($filterUser   !== null && $filterUser   !== '') ? $filterUser   : null
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -268,7 +268,7 @@ Each metric (Total, Completed, In Progress, To Do) is clickable and opens a deta
 
 ### CORS Handling
 - **PHP Proxy Server**: HTTPS-enabled proxy
-- **URL**: `https://dev.famrut.com/famrut-team-logs/api/proxy.php`
+- **URL**: `https://dev.famrut.com/esds-worklogs/jira-api/proxy.php`
 - **Features**:
   - Automatic HTTP to HTTPS migration
   - Header forwarding
@@ -317,8 +317,8 @@ Each metric (Total, Completed, In Progress, To Do) is clickable and opens a deta
 ## Deployment
 
 ### Production URL
-- **Application**: `https://dev.famrut.com/famrut-team-logs/logs/`
-- **API Proxy**: `https://dev.famrut.com/famrut-team-logs/api/proxy.php`
+- **Application**: `https://dev.famrut.com/esds-worklogs/`
+- **API Proxy**: `https://dev.famrut.com/esds-worklogs/jira-api/proxy.php`
 
 ### Build Process
 ```bash

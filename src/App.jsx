@@ -22,6 +22,7 @@ import ResourceAllocationPage from './pages/ResourceAllocationPage';
 import CustomReportBuilderPage from './pages/CustomReportBuilderPage';
 import UserPreferencesPage from './pages/UserPreferencesPage';
 import AdminUsersPage from './pages/AdminUsersPage';
+import AdminAuditLogPage from './pages/AdminAuditLogPage';
 
 const ProtectedRoute = ({ children }) => {
   const { loading, authenticated } = useAuth();
@@ -68,6 +69,7 @@ function AppShell() {
                 <Route path="/preferences" element={<UserPreferencesPage />} />
                 <Route path="/management-report" element={<ManagementReportPage />} />
                 <Route path="/admin/users" element={<AdminUsersPage />} />
+                <Route path="/admin/audit" element={<AdminAuditLogPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
               </Routes>
             </main>
