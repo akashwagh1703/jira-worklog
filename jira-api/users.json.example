@@ -1,0 +1,12 @@
+{
+  "users": {
+    "admin@esds.co.in": {
+      "email": "admin@esds.co.in",
+      "displayName": "Initial Admin",
+      "role": "admin",
+      "scope": { "projects": "*" },
+      "createdAt": 0,
+      "lastLogin": 0
+    }
+  }
+}

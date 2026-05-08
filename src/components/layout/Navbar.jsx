@@ -1,14 +1,15 @@
 import { useConfig } from '../../context/ConfigContext';
+import { useAuth } from '../../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import GlobalSearch from '../GlobalSearch';
 
 const Navbar = ({ sidebarCollapsed }) => {
-  const { currentUser, isConnected, clearCurrentUser, darkMode, toggleDarkMode } = useConfig();
+  const { currentUser, isConnected, darkMode, toggleDarkMode } = useConfig();
+  const { logout } = useAuth();
   const navigate = useNavigate();
 
-  const handleLogout = () => {
-    clearCurrentUser();
-    localStorage.removeItem('isLoggedIn');
+  const handleLogout = async () => {
+    await logout();
     navigate('/login');
   };
 

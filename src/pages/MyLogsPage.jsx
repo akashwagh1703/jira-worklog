@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useConfig } from '../context/ConfigContext';
-import { fetchIssues, fetchWorklogs } from '../services/jiraService';
+import { fetchIssues, fetchWorklogsBulk } from '../services/jiraService';
 import QuickWorklogEntry from '../components/QuickWorklogEntry';
 import { ListSkeleton } from '../components/LoadingSkeleton';
 
@@ -47,13 +47,22 @@ const MyLogsPage = () => {
       const uniqueProjects = [...new Set(result.data.map(i => i?.fields?.project?.name).filter(Boolean))];
       setProjects(uniqueProjects);
 
-      // Fetch worklogs for all issues in parallel
-      const worklogPromises = result.data.map(issue => 
-        fetchWorklogs(currentUser, jiraConfig, issue.key)
-          .then(worklogResult => ({ issue, worklogResult }))
-      );
-      
-      const worklogResults = await Promise.all(worklogPromises);
+      // Bulk worklog fetch (server-side parallel + cached when backend is on)
+      const issueKeys = result.data.map(i => i.key).filter(Boolean);
+      const bulk = await fetchWorklogsBulk(currentUser, jiraConfig, issueKeys);
+      const worklogsByKey = {};
+      if (bulk.success) {
+        for (const wl of bulk.data) {
+          const k = wl.issueKey;
+          if (!k) continue;
+          if (!worklogsByKey[k]) worklogsByKey[k] = [];
+          worklogsByKey[k].push(wl);
+        }
+      }
+      const worklogResults = result.data.map(issue => ({
+        issue,
+        worklogResult: { success: true, data: worklogsByKey[issue.key] || [] },
+      }));
       
       // Process worklogs and filter by date
       const logsData = [];

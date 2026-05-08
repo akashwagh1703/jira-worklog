@@ -1,17 +1,8 @@
 import { useState, useMemo } from 'react';
 import { useConfig } from '../../context/ConfigContext';
-import { fetchIssuesWithPagination, fetchWorklogs } from '../../services/jiraService';
+import { fetchIssuesWithPagination, fetchWorklogsBulk } from '../../services/jiraService';
+import { buildProjectJqlClause } from '../../config/scope';
 import * as XLSX from 'xlsx';
-
-const ALLOWED_PROJECTS = [
-  'ANE-2.0–VCCO-Advancing North East-2.0',
-  'FAMRUT',
-  'FMRT',
-  'OCAC-FUP',
-  'OCACFUP',
-  'NERACE_NEDFI',
-  'NERACE'
-];
 
 const EmployeeReportModal = ({ employee, onClose }) => {
   const { jiraConfig, currentUser } = useConfig();
@@ -30,47 +21,53 @@ const EmployeeReportModal = ({ employee, onClose }) => {
   const fetchWorklogsData = async () => {
     setLoading(true);
     
-    const projectFilter = `project IN ("${ALLOWED_PROJECTS.join('", "')}")`;
+    const projectFilter = buildProjectJqlClause();
     const authorFilter = `worklogAuthor = "${employee.name}"`;
-    const jql = `${projectFilter} AND ${authorFilter} AND worklogDate >= "${dateRange.start}" AND worklogDate <= "${dateRange.end}" ORDER BY updated DESC`;
+    const jql = projectFilter
+      ? `${projectFilter} AND ${authorFilter} AND worklogDate >= "${dateRange.start}" AND worklogDate <= "${dateRange.end}" ORDER BY updated DESC`
+      : `${authorFilter} AND worklogDate >= "${dateRange.start}" AND worklogDate <= "${dateRange.end}" ORDER BY updated DESC`;
     
     const result = await fetchIssuesWithPagination(currentUser, jiraConfig, jql);
-    
+
     if (result.success && result.data) {
-      const startDateTime = new Date(dateRange.start + 'T00:00:00');
-      const endDateTime = new Date(dateRange.end + 'T23:59:59');
-      
-      const worklogPromises = result.data.map(issue => 
-        fetchWorklogs(currentUser, jiraConfig, issue.key)
-          .then(worklogResult => {
-            if (!worklogResult.success || !worklogResult.data) return null;
-            
-            let totalHours = 0;
-            worklogResult.data.forEach(log => {
-              const logDate = new Date(log.started || log.created);
-              if (logDate >= startDateTime && logDate <= endDateTime && log.author?.displayName === employee.name) {
-                totalHours += (log.timeSpentSeconds || 0) / 3600;
-              }
-            });
-            
-            return totalHours > 0 ? {
-              key: issue.key,
-              summary: issue.fields?.summary,
-              project: issue.fields?.project?.name,
-              status: issue.fields?.status?.name,
-              created: issue.fields?.created,
-              duedate: issue.fields?.duedate,
-              updated: issue.fields?.updated,
-              totalHours
-            } : null;
-          })
-          .catch(() => null)
-      );
-      
-      const results = await Promise.all(worklogPromises);
-      setWorklogs(results.filter(Boolean));
+      const issuesByKey = Object.fromEntries(result.data.map((i) => [i.key, i]));
+      const issueKeys = result.data.map((i) => i.key).filter(Boolean);
+
+      // Server filters by date range + author for us, returning only the rows we care about.
+      const bulk = await fetchWorklogsBulk(currentUser, jiraConfig, issueKeys, {
+        startDate: dateRange.start,
+        endDate: dateRange.end,
+        author: employee.name,
+      });
+
+      const totalsByKey = {};
+      if (bulk.success) {
+        for (const log of bulk.data) {
+          const k = log.issueKey;
+          if (!k) continue;
+          totalsByKey[k] = (totalsByKey[k] || 0) + (log.timeSpentSeconds || 0) / 3600;
+        }
+      }
+
+      const rows = Object.entries(totalsByKey)
+        .filter(([, hrs]) => hrs > 0)
+        .map(([k, totalHours]) => {
+          const issue = issuesByKey[k];
+          return {
+            key: k,
+            summary: issue?.fields?.summary,
+            project: issue?.fields?.project?.name,
+            status: issue?.fields?.status?.name,
+            created: issue?.fields?.created,
+            duedate: issue?.fields?.duedate,
+            updated: issue?.fields?.updated,
+            totalHours,
+          };
+        });
+
+      setWorklogs(rows);
     }
-    
+
     setLoading(false);
   };
 

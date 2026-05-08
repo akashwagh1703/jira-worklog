@@ -79,6 +79,73 @@ function jiraSearchJql($jql) {
     return $result;
 }
 
+// Generic JQL search returning full issue records. Used by issues.php / users.php.
+function jiraSearchIssues($jql, $fields = ['summary', 'status', 'assignee', 'project', 'issuetype', 'created', 'updated', 'duedate', 'priority'], $maxResults = 100, $startAt = 0) {
+    $url = JIRA_BASE_URL . '/rest/api/3/search/jql';
+    $payload = [
+        'jql'        => $jql,
+        'fields'     => is_array($fields) ? $fields : explode(',', $fields),
+        'maxResults' => max(1, min(100, intval($maxResults))),
+        'startAt'    => max(0, intval($startAt)),
+    ];
+    return jiraCurlRequest('POST', $url, $payload);
+}
+
+// Fetch worklogs for many issues in parallel using curl_multi.
+// Returns: ['success' => bool, 'data' => [issueKey => [worklog,...]]]
+function jiraFetchWorklogsBulk($issueKeys) {
+    if (empty($issueKeys) || !is_array($issueKeys)) {
+        return ['success' => true, 'data' => []];
+    }
+
+    $multi = curl_multi_init();
+    $handles = [];
+
+    foreach ($issueKeys as $issueKey) {
+        // Defensive: only allow Jira-shaped keys (PROJ-123)
+        if (!preg_match('/^[A-Za-z][A-Za-z0-9_]*-\d+$/', $issueKey)) {
+            continue;
+        }
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL            => JIRA_BASE_URL . '/rest/api/3/issue/' . urlencode($issueKey) . '/worklog',
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_HTTPHEADER     => getDefaultJiraHeaders(),
+            CURLOPT_TIMEOUT        => 30,
+        ]);
+        curl_multi_add_handle($multi, $ch);
+        $handles[$issueKey] = $ch;
+    }
+
+    $running = null;
+    do {
+        $status = curl_multi_exec($multi, $running);
+        if ($running) {
+            curl_multi_select($multi, 0.5);
+        }
+    } while ($running > 0 && $status === CURLM_OK);
+
+    $result = [];
+    foreach ($handles as $issueKey => $ch) {
+        $body       = curl_multi_getcontent($ch);
+        $statusCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_multi_remove_handle($multi, $ch);
+        curl_close($ch);
+
+        if ($statusCode >= 200 && $statusCode < 300) {
+            $decoded = json_decode($body, true);
+            $result[$issueKey] = $decoded['worklogs'] ?? [];
+        } else {
+            $result[$issueKey] = []; // soft-fail per issue, don't kill the whole batch
+        }
+    }
+    curl_multi_close($multi);
+
+    return ['success' => true, 'data' => $result];
+}
+
 function fetchAllJiraProjects($startAt = 0, $maxResults = 50) {
     $url = JIRA_BASE_URL . '/rest/api/3/project/search'
          . '?startAt='    . intval($startAt)

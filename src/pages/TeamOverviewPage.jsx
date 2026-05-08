@@ -1,16 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useConfig } from '../context/ConfigContext';
-import { fetchIssuesWithPagination, fetchWorklogs, fetchWorklogsByDateRange } from '../services/jiraService';
-
-const ALLOWED_PROJECTS = [
-  'ANE-2.0–VCCO-Advancing North East-2.0',
-  'FAMRUT',
-  'FMRT',
-  'OCAC-FUP',
-  'OCACFUP',
-  'NERACE_NEDFI',
-  'NERACE'
-];
+import { fetchIssuesWithPagination, fetchWorklogsBulk, fetchWorklogsByDateRange } from '../services/jiraService';
+import { buildProjectJqlClause, isProjectAllowed } from '../config/scope';
 
 const TeamOverviewPage = () => {
   const { jiraConfig, currentUser } = useConfig();
@@ -105,8 +96,10 @@ const TeamOverviewPage = () => {
     
     try {
       const { start, end } = getDateRange();
-      const projectFilter = `project IN ("${ALLOWED_PROJECTS.join('", "')}")`;
-      const jql = `${projectFilter} AND worklogDate >= "${start}" AND worklogDate <= "${end}" ORDER BY updated DESC`;
+      const projectFilter = buildProjectJqlClause();
+      const jql = projectFilter
+        ? `${projectFilter} AND worklogDate >= "${start}" AND worklogDate <= "${end}" ORDER BY updated DESC`
+        : `worklogDate >= "${start}" AND worklogDate <= "${end}" ORDER BY updated DESC`;
       
       console.log('Fetching issues with JQL:', jql);
       
@@ -142,17 +135,27 @@ const TeamOverviewPage = () => {
       }));
       
       const BATCH_SIZE = 50;
-      
+
       for (let i = 0; i < result.data.length; i += BATCH_SIZE) {
         const batch = result.data.slice(i, i + BATCH_SIZE);
-        
-        const worklogPromises = batch.map(issue => 
-          fetchWorklogs(currentUser, jiraConfig, issue.key)
-            .then(worklogResult => ({ issue, worklogResult }))
-            .catch(() => ({ issue, worklogResult: { success: false, data: [] } }))
-        );
-        
-        const worklogResults = await Promise.all(worklogPromises);
+        const batchKeys = batch.map(b => b.key).filter(Boolean);
+
+        // One bulk call per batch — server fans out in parallel and caches the result.
+        const bulk = await fetchWorklogsBulk(currentUser, jiraConfig, batchKeys);
+        const worklogsByKey = {};
+        if (bulk.success) {
+          for (const wl of bulk.data) {
+            const k = wl.issueKey;
+            if (!k) continue;
+            if (!worklogsByKey[k]) worklogsByKey[k] = [];
+            worklogsByKey[k].push(wl);
+          }
+        }
+
+        const worklogResults = batch.map(issue => ({
+          issue,
+          worklogResult: { success: true, data: worklogsByKey[issue.key] || [] },
+        }));
         
         worklogResults.forEach(({ issue, worklogResult }) => {
           if (!worklogResult.success || !worklogResult.data) return;
@@ -272,16 +275,16 @@ const TeamOverviewPage = () => {
       });
       
       const uniqueProjects = [...new Set(Object.values(employeeMap).flatMap(e => e.projects))].filter(Boolean);
-      setProjects(uniqueProjects.filter(proj => ALLOWED_PROJECTS.includes(proj)));
-      
+      setProjects(uniqueProjects.filter(proj => isProjectAllowed(proj)));
+
       const allStatuses = [...new Set(Object.values(employeeMap).flatMap(e => Object.keys(e.statusCounts)))];
       setStatuses(allStatuses);
-      
+
       const teamArray = Object.values(employeeMap)
-        .filter(emp => emp.projects.some(proj => ALLOWED_PROJECTS.includes(proj)))
+        .filter(emp => emp.projects.some(proj => isProjectAllowed(proj)))
         .map(emp => {
-          emp.projects = emp.projects.filter(proj => ALLOWED_PROJECTS.includes(proj));
-          emp.issues = emp.issues.filter(issue => ALLOWED_PROJECTS.includes(issue.fields?.project?.name));
+          emp.projects = emp.projects.filter(proj => isProjectAllowed(proj));
+          emp.issues = emp.issues.filter(issue => isProjectAllowed(issue.fields?.project?.name));
           delete emp.issueKeys;
           return emp;
         })

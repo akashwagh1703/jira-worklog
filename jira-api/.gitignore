@@ -1,0 +1,6 @@
+# Phase 2: file-based response cache. Never committed.
+cache/
+
+# Phase 3: user store with role/scope assignments. Never committed.
+users.json
+users.json.tmp

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useConfig } from '../context/ConfigContext';
 import { useNotification } from '../context/NotificationContext';
-import { fetchIssues, fetchWorklogs } from '../services/jiraService';
+import { fetchIssues } from '../services/jiraService';
 
 const CustomReportBuilderPage = () => {
   const { jiraConfig, currentUser } = useConfig();

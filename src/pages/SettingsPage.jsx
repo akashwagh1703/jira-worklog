@@ -2,6 +2,7 @@ import { useConfig } from '../context/ConfigContext';
 import JiraConfig from '../components/settings/JiraConfig';
 import FieldMapping from '../components/settings/FieldMapping';
 import ManagementUsers from '../components/settings/ManagementUsers';
+import AllowedProjectsConfig from '../components/settings/AllowedProjectsConfig';
 
 const SettingsPage = () => {
   const { userRole } = useConfig();
@@ -18,6 +19,7 @@ const SettingsPage = () => {
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold text-gray-800">Settings</h1>
       <JiraConfig />
+      <AllowedProjectsConfig />
       <ManagementUsers />
       <FieldMapping />
     </div>

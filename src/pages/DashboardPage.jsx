@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useConfig } from '../context/ConfigContext';
-import { fetchIssues, fetchWorklogs } from '../services/jiraService';
+import { fetchIssues, fetchWorklogsBulk } from '../services/jiraService';
 import { calculateDeliveryRate, calculateQualityScore, calculateWorkHours, calculateCompletion } from '../utils/calculations';
+import { buildProjectJqlClause } from '../config/scope';
 import KPICard from '../components/dashboard/KPICard';
 import { WorkDistributionChart, MonthlyTrendChart, QualityTrendChart, ProjectCompletionBar } from '../components/dashboard/Charts';
 import WeeklySummary from '../components/dashboard/WeeklySummary';
@@ -12,16 +13,6 @@ import BurndownChart from '../components/dashboard/BurndownChart';
 import VelocityChart from '../components/dashboard/VelocityChart';
 import ActivityHeatmap from '../components/dashboard/ActivityHeatmap';
 import { CardSkeleton, ChartSkeleton } from '../components/LoadingSkeleton';
-
-const ALLOWED_PROJECTS = [
-  'ANE-2.0–VCCO-Advancing North East-2.0',
-  'FAMRUT',
-  'FMRT',
-  'OCAC-FUP',
-  'OCACFUP',
-  'NERACE_NEDFI',
-  'NERACE'
-];
 
 const DashboardPage = () => {
   const { jiraConfig, currentUser } = useConfig();
@@ -55,9 +46,11 @@ const DashboardPage = () => {
 
   const loadAllProjects = async () => {
     if (allProjects.length > 0) return; // Only load once
-    
-    const projectFilter = `project IN ("${ALLOWED_PROJECTS.join('", "')}")`;
-    const jql = `${projectFilter} ORDER BY created DESC`;
+
+    const projectFilter = buildProjectJqlClause();
+    const jql = projectFilter
+      ? `${projectFilter} ORDER BY created DESC`
+      : 'ORDER BY created DESC';
     const result = await fetchIssues(currentUser, jiraConfig, '', jql);
     
     if (result.success && result.data) {
@@ -76,16 +69,22 @@ const DashboardPage = () => {
 
   const loadData = async () => {
     setLoading(true);
-    
+
     let jql = '';
-    const projectFilter = selectedProject ? `project = "${selectedProject}"` : `project IN ("${ALLOWED_PROJECTS.join('", "')}")`;
-    
+    const projectFilter = selectedProject
+      ? `project = "${selectedProject}"`
+      : buildProjectJqlClause();
+
     if (currentUser.userType === 'management') {
+      const parts = [];
+      if (projectFilter) parts.push(projectFilter);
       if (dateRange.start && dateRange.end) {
-        jql = `${projectFilter} AND created >= "${dateRange.start}" AND created <= "${dateRange.end}" ORDER BY created DESC`;
+        parts.push(`created >= "${dateRange.start}"`);
+        parts.push(`created <= "${dateRange.end}"`);
       } else {
-        jql = `${projectFilter} AND created >= -90d ORDER BY created DESC`;
+        parts.push('created >= -90d');
       }
+      jql = `${parts.join(' AND ')} ORDER BY created DESC`;
     } else {
       jql = selectedProject ? `project = "${selectedProject}"` : '';
     }
@@ -93,29 +92,23 @@ const DashboardPage = () => {
     const result = await fetchIssues(currentUser, jiraConfig, '', jql);
     if (result.success && result.data) {
       setIssues(result.data);
-      
-      // Fetch worklogs
-      const worklogPromises = result.data.slice(0, 100).map(issue => 
-        fetchWorklogs(currentUser, jiraConfig, issue.key)
-          .then(worklogResult => ({ issue, worklogResult }))
+
+      // Bulk worklog fetch (server-side parallel + cached when backend is on)
+      const issueSlice = result.data.slice(0, 100);
+      const issueKeys = issueSlice.map((i) => i.key).filter(Boolean);
+      const projectByKey = Object.fromEntries(
+        issueSlice.map((i) => [i.key, i.fields?.project?.name])
       );
-      
-      const worklogResults = await Promise.all(worklogPromises);
-      const allWorklogs = [];
-      worklogResults.forEach(({ issue, worklogResult }) => {
-        if (worklogResult.success && worklogResult.data) {
-          worklogResult.data.forEach(log => {
-            allWorklogs.push({
-              ...log,
-              issueKey: issue.key,
-              project: issue.fields?.project?.name,
-              timeSpentSeconds: log.timeSpentSeconds || 0
-            });
-          });
-        }
-      });
+
+      const bulk = await fetchWorklogsBulk(currentUser, jiraConfig, issueKeys);
+      const allWorklogs = (bulk.success ? bulk.data : []).map((log) => ({
+        ...log,
+        issueKey: log.issueKey,
+        project: projectByKey[log.issueKey],
+        timeSpentSeconds: log.timeSpentSeconds || 0,
+      }));
       setWorklogs(allWorklogs);
-      
+
       // Load previous period data if comparison is enabled
       if (showComparison) {
         await loadPreviousPeriod();
@@ -139,28 +132,16 @@ const DashboardPage = () => {
     
     const jql = `created >= "${prevStart.toISOString().split('T')[0]}" AND created <= "${prevEnd.toISOString().split('T')[0]}" ORDER BY created DESC`;
     const result = await fetchIssues(currentUser, jiraConfig, '', jql);
-    
+
     if (result.success && result.data) {
       setPreviousIssues(result.data);
-      
-      // Fetch previous worklogs
-      const worklogPromises = result.data.slice(0, 100).map(issue => 
-        fetchWorklogs(currentUser, jiraConfig, issue.key)
-          .then(worklogResult => ({ issue, worklogResult }))
-      );
-      
-      const worklogResults = await Promise.all(worklogPromises);
-      const allWorklogs = [];
-      worklogResults.forEach(({ issue, worklogResult }) => {
-        if (worklogResult.success && worklogResult.data) {
-          worklogResult.data.forEach(log => {
-            allWorklogs.push({
-              ...log,
-              timeSpentSeconds: log.timeSpentSeconds || 0
-            });
-          });
-        }
-      });
+
+      const issueKeys = result.data.slice(0, 100).map((i) => i.key).filter(Boolean);
+      const bulk = await fetchWorklogsBulk(currentUser, jiraConfig, issueKeys);
+      const allWorklogs = (bulk.success ? bulk.data : []).map((log) => ({
+        ...log,
+        timeSpentSeconds: log.timeSpentSeconds || 0,
+      }));
       setPreviousWorklogs(allWorklogs);
     }
   };
