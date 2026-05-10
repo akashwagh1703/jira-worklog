@@ -11,7 +11,7 @@ if (!$user) {
         'authenticated'   => false,
         'user'            => null,
         'oidcEnabled'     => OIDC_ENABLED,
-        'oidcConfigured'  => OIDC_ENABLED && OIDC_CLIENT_ID !== '' && OIDC_AUTH_URL !== '',
+        'oidcConfigured'  => oidcSpaConfigured(),
     ]);
     exit;
 }
@@ -27,7 +27,7 @@ $payload = [
         'lastLogin'   => $user['lastLogin'] ?? null,
     ],
     'oidcEnabled'    => OIDC_ENABLED,
-    'oidcConfigured' => OIDC_ENABLED && OIDC_CLIENT_ID !== '' && OIDC_AUTH_URL !== '',
+    'oidcConfigured' => oidcSpaConfigured(),
 ];
 
 // Phase 5: surface backend health to admins so they can see at a glance

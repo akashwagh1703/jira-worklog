@@ -39,6 +39,21 @@ define('OIDC_INITIAL_ADMIN',   getenv('OIDC_INITIAL_ADMIN') ?: '');
 // Where the SPA lives so callback can redirect back into it after login.
 define('APP_URL', getenv('APP_URL') ?: '/esds-worklogs/');
 
+// True when IT has set every env var required for login.php → callback.php.
+function oidcSpaConfigured() {
+    if (!OIDC_ENABLED) return false;
+    return OIDC_CLIENT_ID !== ''
+        && OIDC_AUTH_URL !== ''
+        && OIDC_REDIRECT_URI !== ''
+        && OIDC_TOKEN_URL !== ''
+        && OIDC_USERINFO_URL !== '';
+}
+
+// Atlassian OAuth 2.0 (3LO) is not generic OIDC+PKCE — see buildOidcAuthUrl / exchangeOidcCode.
+function isOidcAtlassian() {
+    return stripos(OIDC_AUTH_URL, 'auth.atlassian.com') !== false;
+}
+
 // When AUTH_REQUIRED=true every Phase 2 endpoint will reject anonymous traffic.
 // Default is false so we don't break existing deployments before SSO is wired up.
 define('AUTH_REQUIRED', filter_var(getenv('AUTH_REQUIRED') ?: 'false', FILTER_VALIDATE_BOOLEAN));
@@ -118,6 +133,21 @@ function pkceChallenge($verifier) {
 }
 
 function buildOidcAuthUrl($state, $codeChallenge) {
+    if (isOidcAtlassian()) {
+        // https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/
+        // Requires audience + prompt=consent; does not use PKCE in the documented flow.
+        $params = [
+            'audience'      => 'api.atlassian.com',
+            'client_id'     => OIDC_CLIENT_ID,
+            'scope'         => OIDC_SCOPES,
+            'redirect_uri'  => OIDC_REDIRECT_URI,
+            'state'         => $state,
+            'response_type' => 'code',
+            'prompt'        => 'consent',
+        ];
+        return OIDC_AUTH_URL . (strpos(OIDC_AUTH_URL, '?') !== false ? '&' : '?') . http_build_query($params);
+    }
+
     $params = [
         'response_type'         => 'code',
         'client_id'             => OIDC_CLIENT_ID,
@@ -129,31 +159,53 @@ function buildOidcAuthUrl($state, $codeChallenge) {
         'access_type'           => 'online',
         'prompt'                => 'select_account',
     ];
-    return OIDC_AUTH_URL . (str_contains(OIDC_AUTH_URL, '?') ? '&' : '?') . http_build_query($params);
+    return OIDC_AUTH_URL . (strpos(OIDC_AUTH_URL, '?') !== false ? '&' : '?') . http_build_query($params);
 }
 
 function exchangeOidcCode($code, $codeVerifier) {
-    $body = http_build_query([
-        'grant_type'    => 'authorization_code',
-        'code'          => $code,
-        'redirect_uri'  => OIDC_REDIRECT_URI,
-        'client_id'     => OIDC_CLIENT_ID,
-        'client_secret' => OIDC_CLIENT_SECRET,
-        'code_verifier' => $codeVerifier,
-    ]);
+    if (isOidcAtlassian()) {
+        $body = json_encode([
+            'grant_type'    => 'authorization_code',
+            'client_id'     => OIDC_CLIENT_ID,
+            'client_secret' => OIDC_CLIENT_SECRET,
+            'code'          => $code,
+            'redirect_uri'  => OIDC_REDIRECT_URI,
+        ]);
+        $ch = curl_init(OIDC_TOKEN_URL);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $body,
+            CURLOPT_HTTPHEADER     => [
+                'Content-Type: application/json',
+                'Accept: application/json',
+            ],
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_TIMEOUT        => 15,
+        ]);
+    } else {
+        $body = http_build_query([
+            'grant_type'    => 'authorization_code',
+            'code'          => $code,
+            'redirect_uri'  => OIDC_REDIRECT_URI,
+            'client_id'     => OIDC_CLIENT_ID,
+            'client_secret' => OIDC_CLIENT_SECRET,
+            'code_verifier' => $codeVerifier,
+        ]);
 
-    $ch = curl_init(OIDC_TOKEN_URL);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST           => true,
-        CURLOPT_POSTFIELDS     => $body,
-        CURLOPT_HTTPHEADER     => [
-            'Content-Type: application/x-www-form-urlencoded',
-            'Accept: application/json',
-        ],
-        CURLOPT_SSL_VERIFYPEER => true,
-        CURLOPT_TIMEOUT        => 15,
-    ]);
+        $ch = curl_init(OIDC_TOKEN_URL);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $body,
+            CURLOPT_HTTPHEADER     => [
+                'Content-Type: application/x-www-form-urlencoded',
+                'Accept: application/json',
+            ],
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_TIMEOUT        => 15,
+        ]);
+    }
     $resp   = curl_exec($ch);
     $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $err    = curl_error($ch);
@@ -186,7 +238,13 @@ function fetchOidcUserinfo($accessToken) {
         return ['ok' => false, 'error' => 'userinfo failed', 'http' => $status, 'body' => $resp, 'transport' => $err];
     }
     $info = json_decode($resp, true);
-    if (!is_array($info) || empty($info['email'])) {
+    if (!is_array($info)) {
+        return ['ok' => false, 'error' => 'userinfo not json'];
+    }
+    if (empty($info['email']) && !empty($info['extended_profile']['email'])) {
+        $info['email'] = $info['extended_profile']['email'];
+    }
+    if (empty($info['email'])) {
         return ['ok' => false, 'error' => 'userinfo missing email'];
     }
     return ['ok' => true, 'info' => $info];

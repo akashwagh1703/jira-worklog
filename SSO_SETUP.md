@@ -2,6 +2,19 @@
 
 This dashboard uses **OpenID Connect** for sign-in. Any OIDC-compliant identity provider works — Google Workspace, Microsoft Entra ID (Azure AD), Atlassian Access, Okta, Keycloak. IT only needs to register an OAuth client and plug the resulting credentials into a few env vars.
 
+### Deployment layout (`dev.famrut.com`)
+
+| What | URL |
+|------|-----|
+| **Login (React SPA)** | `https://dev.famrut.com/esds-worklogs/login` |
+| **API root** (PHP) | `https://dev.famrut.com/esds-worklogs/jira-api/` |
+| **OIDC callback** (register this at the IdP) | `https://dev.famrut.com/esds-worklogs/jira-api/auth/callback.php` |
+| **Session / config probe** | `https://dev.famrut.com/esds-worklogs/jira-api/auth/me.php` |
+
+**Built SPA:** set `VITE_APP_BASE_PATH=/esds-worklogs/` and `VITE_API_BASE_URL=https://dev.famrut.com/esds-worklogs/jira-api` (**no** trailing slash on the API base — the app appends `/auth/me.php`, etc.).
+
+**PHP env:** set `OIDC_REDIRECT_URI` to the callback URL in the table. Set `APP_URL` to `/esds-worklogs/` (path-only, same host) or to the full SPA origin `https://dev.famrut.com/esds-worklogs/` so redirects after SSO land on the dashboard.
+
 ---
 
 ## What you'll deliver to IT
@@ -72,16 +85,24 @@ SetEnv OIDC_USERINFO_URL "https://graph.microsoft.com/oidc/userinfo"
 
 Registration: Entra admin centre → "App registrations" → "New registration".
 
-### Atlassian Access
+### Atlassian (Jira Cloud / `*.atlassian.net` accounts)
+
+Use this when users should sign in with the **same Atlassian account** they use for sites like `https://esds.atlassian.net/`. The PHP backend detects Atlassian by `OIDC_AUTH_URL` and applies the [OAuth 2.0 (3LO)](https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/) rules: `audience=api.atlassian.com`, `prompt=consent`, and a **JSON** token exchange (no PKCE).
+
+**Developer console (required):**
+
+1. [Create an OAuth 2.0 (3LO) app](https://developer.atlassian.com/console/myapps/) → **Authorization** → set **Callback URL** to your `OIDC_REDIRECT_URI` (e.g. `https://dev.famrut.com/esds-worklogs/jira-api/auth/callback.php`).
+2. **Permissions** → add **User Identity API** and ensure the **`read:me`** scope is available (needed for `https://api.atlassian.com/me` and email).
+3. Optionally add **Jira API** scopes if your integration calls Jira as the user; SSO login itself only needs User Identity + `read:me`.
 
 ```apache
 SetEnv OIDC_AUTH_URL     "https://auth.atlassian.com/authorize"
 SetEnv OIDC_TOKEN_URL    "https://auth.atlassian.com/oauth/token"
 SetEnv OIDC_USERINFO_URL "https://api.atlassian.com/me"
-SetEnv OIDC_SCOPES       "openid email profile"
+SetEnv OIDC_SCOPES       "read:me"
 ```
 
-Registration: Atlassian developer console → "Create" → "OAuth 2.0 (3LO)".
+Registration: Atlassian developer console → your app → **OAuth 2.0 (3LO)** as above. Use `read:me` (space-separated list if you add more API scopes later).
 
 ### Okta
 
@@ -320,6 +341,8 @@ To roll back: unset `DB_DSN`, reload Apache. Stores fall back to file mode immed
 
 ## Troubleshooting
 
+- **`/jira-api/auth/me.php` returns `"oidcEnabled":false`** — PHP never sees `OIDC_ENABLED=true`. On Apache add the `SetEnv` block from this guide (then `apachectl graceful`), **or** create `jira-api/.env` / `jira-api/.env.local` on the server with `OIDC_ENABLED=true` and the rest of the `OIDC_*` keys (loaded automatically via `db.php`). Until this is fixed, the SSO button stays disabled and `login.php` redirects with `?error=sso_disabled`.
+- **`/jira-api/auth/me.php` returns `"oidcEnabled":true` but `"oidcConfigured":false`** — one of `OIDC_CLIENT_ID`, `OIDC_AUTH_URL`, `OIDC_REDIRECT_URI`, `OIDC_TOKEN_URL`, or `OIDC_USERINFO_URL` is empty in the environment that Apache/PHP uses.
 - **`bad_state` after SSO redirect** — usually means cookies aren't preserved between the browser and your IdP. Ensure the dashboard is served over HTTPS (the session cookie has `Secure` set) and that `SameSite=Lax` is honoured.
 - **`domain_not_allowed`** — the email returned by the IdP isn't in `OIDC_ALLOWED_DOMAINS`. Either add the domain or use a different account.
 - **`/api/auth/me.php` always says authenticated:false** — most likely Apache is running PHP under a config without sessions. Check `session_save_path` is writable.

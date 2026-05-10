@@ -15,7 +15,8 @@ export const APP_BASE_PATH = import.meta.env.VITE_APP_BASE_PATH || '/esds-worklo
 export const APP_ROUTER_BASENAME = APP_BASE_PATH.replace(/\/$/, '');
 
 // PHP backend (proxy + projects API + Phase 2-5 endpoints).
-// Convention: SPA at <host>/esds-worklogs/ → API at <host>/esds-worklogs/jira-api
+// Convention: SPA at https://dev.famrut.com/esds-worklogs/login → API at
+// https://dev.famrut.com/esds-worklogs/jira-api (no trailing slash).
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || 'https://dev.famrut.com/esds-worklogs/jira-api';
 

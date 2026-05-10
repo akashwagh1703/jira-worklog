@@ -9,7 +9,7 @@ if (!OIDC_ENABLED) {
     header('Location: ' . APP_URL . 'login?error=sso_disabled');
     exit;
 }
-if (OIDC_CLIENT_ID === '' || OIDC_AUTH_URL === '' || OIDC_REDIRECT_URI === '') {
+if (!oidcSpaConfigured()) {
     header('Location: ' . APP_URL . 'login?error=sso_not_configured');
     exit;
 }
